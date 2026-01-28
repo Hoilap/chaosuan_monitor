@@ -1,13 +1,13 @@
 import requests
 import base64
 import json
-
+import private_config
 def get_bihu_token():
     url = "https://starlight.nscc-gz.cn/api/keystone/short_term_token/name"
     
     # 你的原始信息
-    username = "inplusgtml@gmail.com"
-    password_plain = ""
+    username = private_config.username
+    password_plain = private_config.password_plain
     
     # 1. 将密码进行 Base64 编码 (对应抓包到的 aW5wbHVzTUwxMjM=)
     password_encoded = base64.b64encode(password_plain.encode('utf-8')).decode('utf-8')

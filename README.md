@@ -1,179 +1,82 @@
-# GPU任务监控程序
+# SYSU 超算 GPU 自动监控与闲置释放工具
 
-自动监控GPU任务的显存使用情况，当任务闲置时自动关闭，避免资源浪费。支持多种通知方式（邮件、微信、钉钉）实时提醒任务状态。
+本项目用于监控超算平台（Starlight）https://starlight.nscc-gz.cn/ 的 GPU 任务。当显存占用持续低于阈值时，自动结束任务以节省费用，并通过钉钉机器人发送实时通知。
 
-## 功能特性
+## 主要功能
 
-- ✅ **自动监控**: 定时检查GPU显存使用情况
-- ✅ **智能判断**: 根据阈值和连续次数判断是否闲置
-- ✅ **自动关闭**: 检测到闲置后自动关闭任务，停止计费
-- ✅ **多种通知**: 支持邮件、Server酱(微信)、钉钉机器人
-- ✅ **实时提醒**: 任务启动、即将关闭、已关闭、异常等状态都会通知
+* **自动监控**：定时检查 GPU 显存使用情况。
+* **闲置判定**：连续 N 次显存低于阈值（例如 3MB）即视为闲置。
+* **自动停止**：确认闲置后自动调用 API 停止任务。
+* **消息通知**：支持钉钉机器人（推荐）、Server酱、邮件通知。
 
-## 快速开始
+## 快速配置指南
 
-### 1. 安装依赖
+一般来说，你只需要配置以下 **3 个** 部分即可运行程序。
 
-```bash
-pip install requests
-```
+### 1. 配置账号信息 (`private_config.py`)
 
-### 2. 配置监控参数
-
-编辑 `monitor.py` 文件，修改以下配置：
+在项目根目录下确保存在 `private_config.py` 文件（如果不存在请新建），并填入你的平台登录账号和密码：
 
 ```python
-# 任务信息
-CLUSTER = "k8s_xingyiAI"
-JOB_ID = "deeplearni-22135328"
-POD_NAME = "deeplearni-22135328-4wfm6"
-NODE_NAME = "an42"
-
-# 鉴权信息
-BIHU_TOKEN = "your_token_here"
-
-# 监控参数
-IDLE_THRESHOLD_MB = 100  # 显存低于100MB认为闲置
-MAX_IDLE_COUNT = 2       # 连续闲置2次则关闭
-CHECK_INTERVAL = 120     # 每120秒检查一次
+# private_config.py
+username = "your_email@example.com"
+password_plain = "your_password"
 ```
 
-### 3. 配置通知方式（可选）
+### 2. 配置任务信息 (`config.py`)
 
-#### 邮件通知
+打开 `config.py` 文件，找到最上方的 `log` 变量。
+
+**无需手动填写复杂的 Pod 名或节点名**，程序会自动化处理：
+
+1. 在网页端的任务事件或日志中，找到包含 `Successfully assigned ... to ...` 的那一行日志。
+2. 直接将整行文本复制过来，赋值给 `log` 变量。
+
+程序会利用正则表达式自动解析出 `POD_NAME`、`NODE_NAME` 和 `JOB_ID`。
 
 ```python
-ENABLE_EMAIL = True
-SMTP_SERVER = "smtp.qq.com"
-SMTP_PORT = 465
-SENDER_EMAIL = "your_email@qq.com"
-SENDER_PASSWORD = "your_auth_code"  # 邮箱授权码
-RECEIVER_EMAIL = "receiver@example.com"
+# config.py 示例
+log = "0001-01-01 00:00:00 +0000 UTC	Normal	Scheduled	Successfully assigned 13957/deeplearni-2903845-r8lcz to an35"
 ```
 
-#### Server酱(微信)
+### 3. 配置钉钉通知 (`config.py`)
+
+推荐使用钉钉群机器人进行状态通知。在 `config.py` 中找到 **钉钉机器人通知配置** 部分：
+
+1. 确保 `ENABLE_DINGTALK = True`。
+2. 填入机器人的 `Webhook` 链接。
+3. 填入机器人的 `加签密钥 (Secret)`。
 
 ```python
-ENABLE_SERVERCHAN = True
-SERVERCHAN_KEY = "SCT123456ABCDEFG"  # 从 https://sct.ftqq.com/ 获取
-```
-
-#### 钉钉机器人
-
-```python
+# config.py
 ENABLE_DINGTALK = True
-DINGTALK_WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=xxxxx"
-DINGTALK_SECRET = "SECxxxxxxxxxxxxxx"
+DINGTALK_WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=xxxx..."
+DINGTALK_SECRET = "SECxxxx..."
 ```
 
-详细配置说明请查看 [通知功能配置指南](NOTIFICATION_GUIDE.md)
+*(邮件和 Server酱通知默认关闭，如需使用可在 config.py 中自行配置)*
 
-### 4. 测试通知配置
+---
 
-```bash
-python test_notification.py
-```
+## 运行方法
 
-### 5. 启动监控
+1. 安装依赖库：
 
-```bash
-python monitor.py
-```
+   ```bash
+   pip install requests
+   ```
+2. 启动监控程序：
 
-或在Windows上双击 `run_monitor.bat`
+   ```bash
+   python monitor.py
+   ```
 
-## 通知消息示例
+   或者直接双击运行目录下的 `run_monitor.bat` (Windows)。
 
-程序会在以下时机发送通知：
+## 监控参数说明 (config.py)
 
-### 监控启动
-```
-🚀 GPU监控已启动
+如果需要调整灵敏度，可修改 `config.py` 中的以下参数：
 
-任务ID: deeplearni-22135328
-节点: an42
-Pod: deeplearni-22135328-4wfm6
-闲置阈值: GPU显存 < 100MB
-触发条件: 连续闲置2次（约4分钟）
-检查间隔: 120秒
-启动时间: 2026-01-22 10:30:00
-```
-
-### 任务即将关闭
-```
-⚠️ GPU任务即将自动关闭
-
-任务ID: deeplearni-22135328
-节点: an42
-原因: GPU连续闲置2次
-当前显存: 45 MB
-触发时间: 2026-01-22 10:34:00
-正在执行关闭操作...
-```
-
-### 任务已关闭
-```
-✅ GPU任务已成功关闭
-
-任务ID: deeplearni-22135328
-节点: an42
-Pod: deeplearni-22135328-4wfm6
-关闭时间: 2026-01-22 10:34:05
-计费已停止
-```
-
-## 文件说明
-
-- `monitor.py` - 主监控程序
-- `notifier.py` - 通知模块（邮件、Server酱、钉钉）
-- `test_notification.py` - 通知功能测试脚本
-- `NOTIFICATION_GUIDE.md` - 详细的通知配置指南
-- `run_monitor.bat` - Windows启动脚本
-
-## 常见问题
-
-### Q: 如何获取BIHU_TOKEN？
-A: 在浏览器中登录平台，打开开发者工具(F12)，在网络请求的Headers中找到 `bihu-token` 字段。
-
-### Q: 邮件发送失败怎么办？
-A: 
-1. 确认使用的是授权码而不是登录密码
-2. 检查SMTP服务器和端口配置
-3. 查看控制台的错误提示
-
-### Q: Server酱推送失败？
-A: 
-1. 确认SendKey正确
-2. 确保关注了"方糖"微信公众号
-3. 检查是否超过每日推送限额
-
-### Q: 如何关闭通知功能？
-A: 将所有的 `ENABLE_*` 配置设为 `False`
-
-### Q: 可以同时使用多种通知方式吗？
-A: 可以！同时启用多种通知方式，程序会并发发送所有通知。
-
-## 注意事项
-
-1. **Token有效期**: BIHU_TOKEN有过期时间，失效后需要重新获取
-2. **网络连接**: 确保能访问监控API和SMTP服务器
-3. **隐私保护**: 配置文件包含敏感信息，不要上传到公共仓库
-4. **合理配置**: 避免检查间隔过短导致频繁请求
-
-## 更新日志
-
-### v2.0 (2026-01-22)
-- ✨ 新增邮件通知功能
-- ✨ 新增Server酱(微信)通知功能
-- ✨ 新增钉钉机器人通知功能
-- ✨ 新增通知管理器，支持多种通知方式
-- ✨ 新增通知测试脚本
-- 📝 完善文档和配置指南
-
-### v1.0
-- ✅ 基础监控功能
-- ✅ 自动关闭闲置任务
-
-## 许可证
-
-MIT License
+* `IDLE_THRESHOLD_MB`: **闲置阈值** (默认 3MB)，显存占用低于此值视为闲置。
+* `MAX_IDLE_COUNT`: **关闭触发次数** (默认 1次)，连续检测到闲置达到此次数后触发自动关闭流程。
+* `CHECK_INTERVAL`: **检查间隔** (默认 120秒)。

@@ -1,6 +1,6 @@
 import re
 
-log = "0001-01-01 00:00:00 +0000 UTC	Normal	Scheduled	Successfully assigned 13957/deeplearni-2812016-hs8mj to an9"
+log = "0001-01-01 00:00:00 +0000 UTC	Normal	Scheduled	Successfully assigned 13957/deeplearni-2903845-r8lcz to an35"
 
 # ==================== 配置区 ====================
 # 1. 基础信息
@@ -20,7 +20,7 @@ else:
 
 # 2. 监控判定参数
 IDLE_THRESHOLD_MB = 3  # 显存占用低于 3MB 认为闲置
-MAX_IDLE_COUNT = 4      # 连续闲置次数达到该值则触发关闭
+MAX_IDLE_COUNT = 1      # 连续闲置次数达到该值则触发关闭
 CHECK_INTERVAL = 120      # 检查间隔（秒）
 
 # 3. API 地址

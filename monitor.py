@@ -153,7 +153,7 @@ def main():
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] Status: Active ({usage} MB) | Counter reset to 0")
                 idle_counter = 0
             
-            if idle_counter >= config.MAX_IDLE_COUNT:
+            if idle_counter == config.MAX_IDLE_COUNT:
                 # 发送任务即将关闭通知
                 send_notification(
                     notif_mgr,
@@ -166,7 +166,8 @@ def main():
                     f"2min后将会自动关闭任务，请及时检查bug"
                 )
                 time.sleep(120)
-
+                
+            elif idle_counter > config.MAX_IDLE_COUNT:
                 if stop_job():
                     # 发送任务已关闭通知
                     send_notification(
