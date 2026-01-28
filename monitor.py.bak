@@ -1,0 +1,241 @@
+import subprocess
+import time
+import requests
+import os
+import re
+from datetime import datetime, timedelta
+from notifier import NotificationManager
+from get_token import get_bihu_token
+
+log = "0001-01-01 00:00:00 +0000 UTC	Normal	Scheduled	Successfully assigned 13957/deeplearni-24131954-wqn7r to an19"
+
+# ==================== 配置区 ====================
+# 1. 基础信息 (从你提供的 API 中提取)
+CLUSTER = "k8s_xingyiAI"
+# 使用正则表达式匹配
+# 匹配规则：找到 "Successfully assigned " 后面的 "命名空间/Pod名" 以及 "to" 后面的 "节点名"
+match = re.search(r"Successfully assigned .*/(\S+) to (\S+)", log)
+if match:
+    POD_NAME = match.group(1)  # 提取第一个括号：deeplearni-22161940-rcpzt
+    NODE_NAME = match.group(2) # 提取第二个括号：an9
+    # 提取 JOB_ID (通常是 POD_NAME 去掉最后的一个短横线及其后的随机字符串)
+    # 使用 rpartition 从右侧切割，取第一部分
+    JOB_ID = POD_NAME.rpartition('-')[0]
+
+# 2. 鉴权信息 (必须填入你抓到的最新 bihu-token)
+BIHU_TOKEN = get_bihu_token()
+
+# 3. 监控判定参数
+IDLE_THRESHOLD_MB = 3  # 显存占用低于 100MB 认为闲置
+MAX_IDLE_COUNT = 4      # 连续闲置次数达到该值则触发关闭
+CHECK_INTERVAL = 120      # 检查间隔（秒）
+
+# 4. API 地址
+METRIC_URL = "https://starlight.nscc-gz.cn/api/monitor/metric"
+DELETE_URL = f"https://starlight.nscc-gz.cn/api/job/running/{CLUSTER}/{JOB_ID}"
+
+# 5. 通知配置（可选 - 留空则不发送通知）
+# ============== 邮件通知配置 ==============
+ENABLE_EMAIL = False  # 是否启用邮件通知
+SMTP_SERVER = "smtp.qq.com"  # SMTP服务器 (QQ邮箱: smtp.qq.com, 163邮箱: smtp.163.com, Gmail: smtp.gmail.com)
+SMTP_PORT = 465  # SMTP端口 (SSL通常用465)
+SENDER_EMAIL = ""  # 发件人邮箱
+SENDER_PASSWORD = ""  # 邮箱密码或授权码
+RECEIVER_EMAIL = ""  # 收件人邮箱
+
+# ============== Server酱(微信)通知配置 ==============
+ENABLE_SERVERCHAN = False  # 是否启用Server酱通知
+SERVERCHAN_KEY = ""  # Server酱SendKey (从 https://sct.ftqq.com/ 获取)
+
+# ============== 钉钉机器人通知配置 ==============
+ENABLE_DINGTALK = True  # 是否启用钉钉通知
+DINGTALK_WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=8462fe5ab6ae20d68a6bd0c49377fe5aa038c20684b1323e191d9124a28783d6"  # 钉钉机器人Webhook地址
+DINGTALK_SECRET = "SEC3dfbc622eaad681399357a4d885ef1f8eb3ad590b1d2918d77ef25d673ba440b"  # 钉钉机器人加签密钥（可选）
+# ===============================================
+
+HEADERS = {
+    "bihu-token": BIHU_TOKEN,
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+    "accept": "application/json, text/plain, */*"
+}
+
+def get_current_gpu_memory():
+    """从 API 获取最新的显存占用值"""
+    # 动态生成最近一小时的时间范围（API要求）
+    now = datetime.utcnow()
+    start_time = (now - timedelta(minutes=60)).isoformat() + "Z"
+    end_time = now.isoformat() + "Z"
+
+    params = {
+        "node_list": NODE_NAME,
+        "pod_list": POD_NAME,
+        "metric": "gpu_memory",
+        "start": start_time,
+        "end": end_time,
+        "limit": "10", # 我们只需要最新的几个点
+        "cluster_name": CLUSTER,
+        "job_name": JOB_ID,
+        "job_id": JOB_ID
+    }
+
+    try:
+        response = requests.get(METRIC_URL, params=params, headers=HEADERS, timeout=15,verify=False  )
+        res_json = response.json()
+        
+        if res_json.get("code") != 200:
+            print(f"API error: {res_json.get('info')}")
+            return None
+
+        # 解析 spec -> device -> data
+        devices = res_json.get("spec", {}).get("device", [])
+        if not devices:
+            print(res_json)
+            print("Can't find device data in response.")
+            return None
+
+        max_usage = 0
+        for dev in devices:
+            data_points = dev.get("data", [])
+            if data_points:
+                # 取最后一个数据点 [timestamp, value] 的 value
+                latest_val = float(data_points[-1][1])
+                max_usage = max(max_usage, latest_val)
+        
+        return max_usage
+    
+    except requests.exceptions.SSLError as e:
+        print(f"❌ SSL连接错误: {e}")
+        # 如果遇到 SSL EOF，通常等待几秒重试可能有效
+        return None 
+    
+    except Exception as e:
+        print(f"Request data exception: {e}")
+        return None
+
+def stop_job():
+    """Send DELETE request to stop the job"""
+    print(f"\n[{datetime.now()}] !!! Triggering auto shutdown command !!!")
+    try:
+        res = requests.delete(DELETE_URL, headers=HEADERS, timeout=15)
+        if res.status_code == 200:
+            print(">>> Platform confirmed job shutdown, billing stopped.")
+            return True
+        else:
+            print(f">>> Shutdown failed: {res.status_code} {res.text}")
+    except Exception as e:
+        print(f">>> Command send exception: {e}")
+    return False
+
+def setup_notifications():
+    """配置通知管理器"""
+    notif_mgr = NotificationManager()
+    
+    # 添加邮件通知
+    if ENABLE_EMAIL and SENDER_EMAIL and RECEIVER_EMAIL:
+        notif_mgr.add_email_notifier(
+            SMTP_SERVER, SMTP_PORT, 
+            SENDER_EMAIL, SENDER_PASSWORD, 
+            RECEIVER_EMAIL
+        )
+    
+    # 添加Server酱通知
+    if ENABLE_SERVERCHAN and SERVERCHAN_KEY:
+        notif_mgr.add_serverchan_notifier(SERVERCHAN_KEY)
+    
+    # 添加钉钉通知
+    if ENABLE_DINGTALK and DINGTALK_WEBHOOK:
+        notif_mgr.add_dingtalk_notifier(DINGTALK_WEBHOOK, DINGTALK_SECRET or None)
+    
+    return notif_mgr
+
+def send_notification(notif_mgr, title, message):
+    """发送通知（如果配置了通知方式）"""
+    if notif_mgr.notifiers:
+        notif_mgr.send_all(title, message)
+
+
+def main():
+    idle_counter = 0
+    print(f"Starting monitoring job: {JOB_ID}")
+    print(f"Criteria: GPU memory < {IDLE_THRESHOLD_MB}MB for {MAX_IDLE_COUNT} consecutive checks")
+    
+    # 初始化通知管理器
+    notif_mgr = setup_notifications()
+    
+    # 发送监控启动通知
+    send_notification(
+        notif_mgr,
+        "🚀 GPU监控已启动",
+        f"任务ID: {JOB_ID}\n"
+        f"节点: {NODE_NAME}\n"
+        f"Pod: {POD_NAME}\n"
+        f"闲置阈值: GPU显存 < {IDLE_THRESHOLD_MB}MB\n"
+        f"触发条件: 连续闲置{MAX_IDLE_COUNT}次（约{MAX_IDLE_COUNT * CHECK_INTERVAL // 60}分钟）\n"
+        f"检查间隔: {CHECK_INTERVAL}秒\n"
+        f"启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+
+    while True:
+        usage = get_current_gpu_memory()
+        
+        if usage is not None:
+            if usage < IDLE_THRESHOLD_MB:
+                idle_counter += 1
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Status: Idle ({usage} MB) | Counter: {idle_counter}/{MAX_IDLE_COUNT}")
+            else:
+                if idle_counter > 0:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Status: Active ({usage} MB) | Counter reset to 0")
+                idle_counter = 0
+            
+            if idle_counter >= MAX_IDLE_COUNT:
+                # 发送任务即将关闭通知
+                send_notification(
+                    notif_mgr,
+                    "⚠️ GPU任务即将自动关闭",
+                    f"任务ID: {JOB_ID}\n"
+                    f"节点: {NODE_NAME}\n"
+                    f"原因: GPU连续闲置{MAX_IDLE_COUNT}次\n"
+                    f"当前显存: {usage} MB\n"
+                    f"触发时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"2min后将会自动关闭任务，请及时检查bug"
+                )
+                time.sleep(120)
+
+                if stop_job():
+                    # 发送任务已关闭通知
+                    send_notification(
+                        notif_mgr,
+                        "✅ GPU任务已成功关闭",
+                        f"任务ID: {JOB_ID}\n"
+                        f"节点: {NODE_NAME}\n"
+                        f"Pod: {POD_NAME}\n"
+                        f"关闭时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        f"计费已停止"
+                    )
+                    break
+                else:
+                    # 发送关闭失败通知
+                    send_notification(
+                        notif_mgr,
+                        "❌ GPU任务关闭失败",
+                        f"任务ID: {JOB_ID}\n"
+                        f"失败时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        f"请手动检查并关闭任务"
+                    )
+        else:
+            print("Can't get data")
+            # 发送数据获取失败通知
+            send_notification(
+                notif_mgr,
+                "❌ GPU监控数据获取失败",
+                f"任务ID: {JOB_ID}\n"
+                f"失败时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"监控程序已退出"
+            )
+            return # Exit on data fetch failure
+
+        time.sleep(CHECK_INTERVAL)
+
+if __name__ == "__main__":
+    main()
+
