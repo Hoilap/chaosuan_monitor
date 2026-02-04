@@ -1,6 +1,6 @@
 import re
 
-log = "0001-01-01 00:00:00 +0000 UTC	Normal	Scheduled	Successfully assigned 13957/deeplearni-2903845-r8lcz to an35"
+log = "0001-01-01 00:00:00 +0000 UTC	Normal	Scheduled	Successfully assigned 13957/dengkn-7kgf5 to an21"
 
 # ==================== 配置区 ====================
 # 1. 基础信息
@@ -25,6 +25,7 @@ CHECK_INTERVAL = 120      # 检查间隔（秒）
 
 # 3. API 地址
 METRIC_URL = "https://starlight.nscc-gz.cn/api/monitor/metric"
+JOB_STATUS_URL = f"https://starlight.nscc-gz.cn/api/job/running/{CLUSTER}/{JOB_ID}"
 DELETE_URL = f"https://starlight.nscc-gz.cn/api/job/running/{CLUSTER}/{JOB_ID}"
 
 # 4. 通知配置（可选 - 留空则不发送通知）
